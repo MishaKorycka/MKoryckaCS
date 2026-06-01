@@ -25,7 +25,7 @@ def load_data():
             return []
     
     df["genre_list"] = df["genres"].apply(extract_genres)  #tworzy nową kolumnę z listami gatunków dla każdego filmu
-    df["primary_genre"] = df["genre_list"].str[0] # extracts the primary genre  bierze pierwszy genre coerce jest potrzebne bo wymusz na apce zeby dala none a nie psula sie (AI)
+    df["primary_genre"] = df["genre_list"].str[0] # extracts the primary genre  bierze pierwszy genre 
     df = df.dropna(subset=["title", "vote_average", "year", "runtime", "primary_genre"])  # usuwa jak czegos brakuje 
     df = df.drop_duplicates(subset=["title"]) #usuwa duplikaty 
     df = df.reset_index(drop=True) #generuje index dla nowego df, usuwa stary 
