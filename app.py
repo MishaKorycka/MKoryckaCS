@@ -3,7 +3,8 @@ import pandas as pd # biblioteka do pracy z danymi w tabelach uzywam jej do wczy
 import ast # changes the text from movies into python list so that I can work with it (advised by AI)
 from pathlib import Path # umożliwia znajdowanie plików niezależnie od komputera na którym uruchamiamy aplikację
 from auth import hash_password, load_users, save_users
-from watchlist_manager import add_to_watchlist, get_watchlist
+from watchlist_manager import add_to_watchlist, get_watchlist, remove_from_watchlist
+from recommender import recommend_similar_movies
 
 
 st.set_page_config(page_title="Movie Recommender", layout="wide")
@@ -25,8 +26,8 @@ def load_data():
             return []
     
     df["genre_list"] = df["genres"].apply(extract_genres)  #tworzy nową kolumnę z listami gatunków dla każdego filmu
-    df["primary_genre"] = df["genre_list"].str[0] # extracts the primary genre  bierze pierwszy genre 
-    df = df.dropna(subset=["title", "vote_average", "year", "runtime", "primary_genre"])  # usuwa jak czegos brakuje 
+    df["primary_genre"] = df["genre_list"].str[0] # extracts the primary genre  bierze pierwszy genre coerce jest potrzebne bo wymusz na apce zeby dala none a nie psula sie (AI)
+    df = df.dropna(subset=["title", "vote_average", "release_date", "runtime", "primary_genre"])  # usuwa jak czegos brakuje 
     df = df.drop_duplicates(subset=["title"]) #usuwa duplikaty 
     df = df.reset_index(drop=True) #generuje index dla nowego df, usuwa stary 
     return df
@@ -110,13 +111,31 @@ with tab_movies:
     
     st.subheader("Matching Movies")
 
+# 1: zaczynamy od pelnej listy filmow
+    filtered_df = df
+
+    #2: filtrujemy po gatunku — jesli uzytkownik wybral cos innego niz "Any"
+    if selected_genre != "Any":
+        filtered_df = filtered_df[filtered_df["primary_genre"] == selected_genre]
+
+    # 3 filtrujemy po ocenie — zostawiamy tylko filmy z ocena >= wybranej
+    filtered_df = filtered_df[filtered_df["vote_average"] >= min_rating]
+
+    # filtrujemy po roku — kolumna release_date ma format "2010-05-12"
+    # wiec bierzemy pierwsze 4 znaki (rok) i porownujemy z suwakiem
+    filtered_df = filtered_df[filtered_df["release_date"].str[:4].astype(int) >= min_year]
+
+    # : filtrujemy po dlugosci — zostawiamy filmy krotsze lub rowne wybranej
+    filtered_df = filtered_df[filtered_df["runtime"] <= max_length]
+
+    st.write(f"Movies found: **{len(filtered_df)}**")
 
     st.dataframe(
-        df[["title", "vote_average", "primary_genre", "year", "runtime"]].head(30).rename(columns={
+        df[["title", "vote_average", "primary_genre", "release_date", "runtime"]].head(30).rename(columns={
             "title": "Title",
             "vote_average": "Rating",
             "primary_genre": "Genre",
-            "year": "Year",
+            "release_date": "Year",
             "runtime": "Runtime (min)"
         }),
         use_container_width=True,
@@ -131,19 +150,59 @@ with tab_movies:
                 st.warning("This movie is already in your watchlist.")
     else:
         st.info("Log in to save movies to your watchlist.")
-    #watchlista 
-    with tab_watchlist:
-        if not st.session_state.logged_in: 
+#  PODOBNE FILMY
+    st.divider() # pozioma linia oddzielajaca sekcje
+    st.subheader("Similar Movies")
+  
+
+    # selectbox z ktorego uzytkownik wybiera film do porownania
+    # bierzemy filmy z aktualnie przefiltrowanej listy
+    titles_list = filtered_df["title"].head(30).tolist()
+
+    if len(titles_list) == 0:
+        st.info("No movies to compare — adjust the filters.")
+    else:
+        selected_movie = st.selectbox("Select a movie to find similar ones:", titles_list, key="similar_movie")
+
+        # 1: znajdz wiersz wybranego filmu w pelnej bazie danych
+        movie_row = df[df["title"] == selected_movie].iloc[0]
+        # iloc[0] bierze pierwszy (i jedyny) wynik — bez tego dostajemy caly dataframe zamiast jednego wiersza
+
+        # 2: wyciagnij gatunek i ocene wybranego filmu
+        genre_of_selected   = movie_row["primary_genre"]
+        rating_of_selected  = movie_row["vote_average"]
+
+        # K 3: z pelnej bazy wez tylko filmy tego samego gatunku
+        same_genre_df = df[df["primary_genre"] == genre_of_selected]
+
+        #  4: usun wybrany film zeby nie pojawil sie w wynikach
+        same_genre_df = same_genre_df[same_genre_df["title"] != selected_movie]
+
+        # : oblicz dla kazdego filmu roznice miedzy jego ocena a ocena wybranego filmu
+        # abs() zamienia ujemne liczby na dodatnie — interesuje nas tylko odleglosc, nie kierunek
+        same_genre_df = same_genre_df.copy() # kopia zeby pandas nie krzyczal na modyfikacje
+        same_genre_df["roznica_ocen"] = abs(same_genre_df["vote_average"] - rating_of_selected)
+
+        # 6: posortuj po roznicy — najmniejsza roznica = najbardziej podobna ocena = na gorze
+        same_genre_df = same_genre_df.sort_values("roznica_ocen")
+
+        # K: wez 10 pierwszych
+        similar_10 = same_genre_df.head(10)
+
+        st.write(f"Movies similar to **{selected_movie}** (genre: {genre_of_selected}, rating: {rating_of_selected}):")    
+    #watchlista
+with tab_watchlist:
+        if not st.session_state.logged_in:
             st.info("Please log in to view your watchlist.")
         else:
-            st.subheader("My Watchlist") 
-            watchlist = get_watchlist(st.session_state.username) #Wywołuje funkcję z watchlist_manager.py 
+            st.subheader("My Watchlist")
+            watchlist = get_watchlist(st.session_state.username) #Wywołuje funkcję z watchlist_manager.py
             #która otwiera users.json i zwraca listę filmów dla zalogowanego użytkownika.
             if not watchlist:
                 st.info("Your watchlist is empty. Add movies to see them here!")
             else:
                 st.dataframe( # pokazuje kolmne z filmami # isin sprawdza czy jest w watchliscie i wyswietla
-                    df[df["title"].isin(watchlist)][["title", "vote_average", "primary_genre", "year", "runtime"]].rename(columns={
+                    df[df["title"].isin(watchlist)][["title", "vote_average", "primary_genre", "release_date", "runtime"]].rename(columns={
                         "title": "Title",
                         "vote_average": "Rating",
                         "primary_genre": "Genre",
@@ -153,3 +212,36 @@ with tab_movies:
                     use_container_width=True,
                     hide_index=True
                 )
+                movie_to_remove = st.selectbox("Select movie to remove", watchlist, key="remove_movie")
+                if st.button("Remove from watchlist"):
+                    if remove_from_watchlist(st.session_state.username, movie_to_remove):
+                        st.success(f"'{movie_to_remove}' removed from watchlist!")
+                        st.rerun()
+                    else:
+                        st.warning("Movie not found in watchlist.")
+#  REKOMENDACJE BAZOWANE NA WATCHLISCIE 
+            st.divider()
+            st.subheader("Recommended for you")
+            st.write("Based on the movies in your watchlist, you might also like:")
+
+            recommendations = recommend_similar_movies(
+                movies_df=df,
+                watchlist_titles=watchlist,
+                limit=10
+            )
+
+            if recommendations.empty:
+                st.info("Add movies to your watchlist to get personalised recommendations.")
+            else:
+                st.dataframe(
+                    recommendations[["title", "vote_average", "primary_genre", "release_date", "runtime"]].rename(columns={
+                        "title": "Title",
+                        "vote_average": "Rating",
+                        "primary_genre": "Genre",
+                        "release_date": "Year",
+                        "runtime": "Runtime (min)"
+                    }),
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
